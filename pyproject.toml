@@ -1,0 +1,23 @@
+# Собираем обычный пакет Python средствами setuptools.
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# Устанавливаем пакет локально после клонирования репозитория.
+[project]
+name = "yandex-maps-reviews"
+version = "0.2.0"
+description = "Поиск организаций и сбор отзывов с публичных страниц Яндекс Карт"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["playwright==1.52.0", "shapely==2.1.2", "pandas>=2.2,<4", "geopandas>=1.0,<2"]
+
+# Сохраняем существующие сценарии рядом с интерфейсом пакета.
+[tool.setuptools]
+packages = ["yandex_maps_reviews"]
+package-dir = {yandex_maps_reviews = "."}
+include-package-data = false
+
+# В установленном пакете доступны справочники, границы и карта выбора территории.
+[tool.setuptools.package-data]
+yandex_maps_reviews = ["categories.json", "boundaries/catalog.json", "boundaries/README.md", "boundaries/*.geojson", "select_area.html", "area_selection.js"]

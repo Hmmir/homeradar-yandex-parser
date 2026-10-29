@@ -1,0 +1,34 @@
+{
+  "description": "Локальный каталог архивных границ. Актуальность перед сбором нужно проверить.",
+  "license": "ODbL 1.0",
+  "attribution": "© OpenStreetMap contributors",
+  "cities": [
+    {
+      "id": "moscow",
+      "name": "Москва",
+      "label": "Москва — административная граница, снимок 2016 года",
+      "aliases": [
+        "москва",
+        "moscow"
+      ],
+      "file": "boundaries/moscow.geojson",
+      "snapshot": "2016-12-08",
+      "source_url": "https://github.com/missinglink/osm-boundaries/blob/master/data/000/102/269/000102269.geojson"
+    },
+    {
+      "id": "saint-petersburg",
+      "name": "Санкт-Петербург",
+      "label": "Санкт-Петербург — административная граница, снимок 2016 года",
+      "aliases": [
+        "санкт-петербург",
+        "санкт петербург",
+        "петербург",
+        "спб",
+        "saint petersburg"
+      ],
+      "file": "boundaries/saint-petersburg.geojson",
+      "snapshot": "2016-12-08",
+      "source_url": "https://github.com/missinglink/osm-boundaries/blob/master/data/000/337/422/000337422.geojson"
+    }
+  ]
+}
