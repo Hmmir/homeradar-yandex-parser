@@ -275,6 +275,65 @@ class SourceTests(unittest.TestCase):
 
 
 class FullCollectionTests(unittest.TestCase):
+    def test_html_crlf_and_dom_lf_do_not_invalidate_confirmed_full_text(self):
+        state = {
+            "stack": [
+                {
+                    "results": {
+                        "items": [
+                            {
+                                "id": OID,
+                                "title": "Тестовая компания",
+                                "ratingData": {"ratingValue": 4.5, "reviewCount": 1},
+                                "reviewResults": {
+                                    "reviews": [
+                                        {
+                                            "reviewId": "source-1",
+                                            "businessId": OID,
+                                            "author": {
+                                                "name": "Тестовый автор",
+                                                "publicId": "author-1",
+                                            },
+                                            "updatedTime": DATE,
+                                            "rating": 5,
+                                            "text": "Первая строка.\r\nВторая строка.\r\nПродолжение.",
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    }
+                }
+            ],
+        }
+        html = (
+            '<script class="state-view" type="application/json">'
+            + json.dumps(state)
+            + "</script>"
+        )
+        current = {
+            "author": "Тестовый автор",
+            "author_url": "https://yandex.ru/maps/user/author-1",
+            "date": DATE,
+            "rating": 5,
+            "text_truncated": True,
+            "text": "Первая строка.\nВторая строка.\nПродолжение.",
+        }
+        page = fake_page(html, {"company": {}, "reviews": [current]})
+        with TemporaryDirectory() as folder:
+            result = collect(
+                page,
+                OID,
+                export.canonical_url(OID)[1],
+                Path(folder) / "raw.json",
+                None,
+                0,
+            )
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["confirmed_full_texts"], 1)
+        self.assertEqual(result["truncated_count"], 0)
+        self.assertEqual(result["reviews"][0]["text"], current["text"])
+
     def test_full_export_does_not_require_newest_sorting(self):
         rows = [
             {

@@ -203,6 +203,11 @@ def canonical_url(value):
     return oid, f"https://{parsed.hostname}/maps/org/-/{oid}/reviews/"
 
 
+def review_text(value):
+    # HTML DOM нормализует CRLF/CR в LF; встроенный JSON сохраняет исходные переносы.
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 # Формируем устойчивый ключ для объединения HTML и DOM одного отзыва.
 def review_key(oid, row):
     # Полный текст обновляет тот же отзыв, сохраняя его ключ.
@@ -219,7 +224,7 @@ def review_key(oid, row):
         # При нехватке автора или даты используем текст как дополнительный признак.
         text = row.get("text")
         # HTML и DOM могут различаться только пробелами по краям анонимного отзыва.
-        identity.append(text.strip() if isinstance(text, str) else text)
+        identity.append(review_text(text) if isinstance(text, str) else text)
     # Сообщаем, что условие готовности или наличия проверки не выполнено.
     return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
 
@@ -629,7 +634,7 @@ def collect(page, oid, url, target, limit, scroll_pause):
         # Приводим полный текст HTML и DOM к одинаковой обработке внешних пробелов.
         if isinstance(saved.get("text"), str):
             # Слова, переносы внутри текста и знаки препинания сохраняются.
-            saved = dict(saved, text=saved["text"].strip())
+            saved = dict(saved, text=review_text(saved["text"]))
         # Пересчёт объединяет одинаковые полные версии прежних снимков.
         saved = dict(saved, id=review_key(oid, saved))
         # Сохраняем единственную версию с пересчитанным ключом.
@@ -816,7 +821,7 @@ def collect(page, oid, url, target, limit, scroll_pause):
         # DOM убирает внешние пробелы; применяем ту же обработку к встроенному HTML.
         if isinstance(row.get("text"), str):
             # Не изменяем пробелы и переносы внутри текста.
-            row["text"] = row["text"].strip()
+            row["text"] = review_text(row["text"])
         # Дополняем отзыв идентификатором для объединения записей.
         row["id"] = review_key(oid, row)
         # Отмечаем отзыв как найденный в этой попытке.
