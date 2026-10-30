@@ -129,6 +129,33 @@ class SummaryTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    @patch("actions_smoke.subprocess.run")
+    def test_source_pagination_diagnostic_excludes_non_numeric_fields(self, run):
+        def rejected(*args, **kwargs):
+            kwargs["stdout"].write(
+                json.dumps(
+                    {
+                        "event": "homeradar_source_metadata",
+                        "pagination": {
+                            "page": 1,
+                            "totalPages": 12,
+                            "count": 1623,
+                            "limit": 50,
+                            "offset": 0,
+                            "private": "PRIVATE",
+                        },
+                    }
+                )
+                + "\n"
+            )
+            return subprocess.CompletedProcess(args[0], 1)
+
+        run.side_effect = rejected
+        with TemporaryDirectory() as root:
+            result = smoke.run_case(OID, Path(root))
+        self.assertEqual(result.get("source_pagination", {}).get("totalPages"), 12)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
     @patch("actions_smoke.publish_summary")
     @patch("actions_smoke.run_suite", return_value={"passed": 2})
     def test_cli_accepts_and_deduplicates_selected_organizations(self, run, publish):

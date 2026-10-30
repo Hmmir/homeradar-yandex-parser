@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-from export_homeradar import build_export
+from export_homeradar import SOURCE_DIAGNOSTIC_FIELDS, build_export
 from collect_yandex import canonical_url, review_date
 from storage import save_result
 
@@ -146,10 +146,27 @@ def run_case(oid, output):
                 "error_type": type(error).__name__,
             }
     result["elapsed_seconds"] = round(time.monotonic() - started, 2)
-    private_log = log_path.read_text(encoding="utf-8").lower()
+    log_contents = log_path.read_text(encoding="utf-8")
+    private_log = log_contents.lower()
     rejection = re.search(r"exportvalidationerror: \[([a-z_]+)\]", private_log)
     if rejection:
         result["reason"] = rejection.group(1)
+    for line in log_contents.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("event") == "homeradar_source_metadata"
+        ):
+            pagination = event.get("pagination", {})
+            if isinstance(pagination, dict):
+                result["source_pagination"] = {
+                    key: value
+                    for key, value in pagination.items()
+                    if key in SOURCE_DIAGNOSTIC_FIELDS and type(value) is int
+                }
     if result.get("collector_status") in ACCESS_STATUSES or any(
         marker in private_log
         for marker in ("captcha", "http error 403", "http error 429")

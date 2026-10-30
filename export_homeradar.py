@@ -23,6 +23,15 @@ from collect_yandex import (
 from extract_saved_html import StateScript
 from storage import output_lock, save_result
 
+SOURCE_DIAGNOSTIC_FIELDS = (
+    "page",
+    "totalPages",
+    "count",
+    "limit",
+    "offset",
+    "ratingReviewCount",
+)
+
 
 class ExportValidationError(ValueError):
     def __init__(self, reason, message):
@@ -177,6 +186,26 @@ def collect_details(oid):
             )
         result = business["reviewResults"]
         params = result.get("params", {})
+        pagination = dict(params, ratingReviewCount=expected[2])
+        print(
+            json.dumps(
+                {
+                    "event": "homeradar_source_metadata",
+                    "organization_id": oid,
+                    "pagination": {
+                        key: value
+                        for key, value in pagination.items()
+                        if key in SOURCE_DIAGNOSTIC_FIELDS and type(value) is int
+                    },
+                }
+            ),
+            flush=True,
+        )
+        if params.get("count") != expected[2]:
+            raise ExportValidationError(
+                "source_review_count_mismatch",
+                "Счётчики отзывов карточки и выдачи Яндекса не совпадают",
+            )
         reported_total = params.get("totalPages")
         limit, offset = params.get("limit"), params.get("offset")
         if (
@@ -186,7 +215,6 @@ def collect_details(oid):
             or offset != (number - 1) * limit
             or type(reported_total) is not int
             or reported_total != (expected[2] + limit - 1) // limit
-            or params.get("count") != expected[2]
         ):
             raise ExportValidationError(
                 "invalid_pagination",
