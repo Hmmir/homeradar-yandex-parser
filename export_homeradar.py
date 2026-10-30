@@ -3,6 +3,8 @@
 import argparse
 import json
 import math
+import subprocess
+import sys
 import time
 import unicodedata
 from collections import defaultdict
@@ -426,7 +428,7 @@ def write_export(snapshot, details, target):
 def run_export(
     organization, output, executable=None, snapshot_path=None, details_path=None
 ):
-    oid, _ = canonical_url(organization)
+    oid, url = canonical_url(organization)
     output = Path(output).resolve()
     inputs = [Path(p).resolve() for p in (snapshot_path, details_path) if p is not None]
     if output in inputs:
@@ -441,21 +443,32 @@ def run_export(
                 raise ValueError(
                     "Файл экспорта не должен совпадать со служебными файлами"
                 )
+            command = [
+                sys.executable,
+                str(Path(__file__).with_name("collect_yandex.py")),
+                url,
+                "--output",
+                str(raw),
+                "--refresh",
+                "--429-retries",
+                "0",
+            ]
             if executable:
-                print(
-                    json.dumps(
-                        {
-                            "event": "homeradar_executable_unused",
-                            "organization_id": oid,
-                            "collection_source": "public_html",
-                        }
-                    ),
-                    flush=True,
+                command.extend(["--executable", str(executable)])
+            try:
+                collected = subprocess.run(command, timeout=900, check=False)
+            except subprocess.TimeoutExpired as error:
+                raise ExportValidationError(
+                    "collection_timeout",
+                    "Chromium-сбор превысил 15 минут; прежний экспорт сохранён",
+                ) from error
+            if collected.returncode:
+                raise ExportValidationError(
+                    "browser_collection_failed",
+                    f"Сборщик завершился с кодом {collected.returncode}; экспорт сохранён",
                 )
             details = collect_details(oid)
             save_result(details_path, details)
-            snapshot = snapshot_from_details(details)
-            save_result(snapshot_path, snapshot)
         else:
             details = json.loads(Path(details_path).read_text(encoding="utf-8-sig"))
         snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8-sig"))
@@ -490,7 +503,7 @@ def main():
     )
     parser.add_argument(
         "--executable",
-        help="Совместимость прежнего CLI: HTML-экспорт не использует браузер",
+        help="Путь к установленному Chrome/Chromium",
     )
     parser.add_argument(
         "--from-snapshot",

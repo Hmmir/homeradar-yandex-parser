@@ -24,6 +24,24 @@ def saved_export(root):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_public_collector_status_is_allowlisted(self):
+        with TemporaryDirectory() as root:
+            folder = Path(root) / OID
+            snapshot, _ = example()
+            snapshot["status"] = "PRIVATE_TOKEN"
+            save_result(folder / "work" / OID / "raw" / f"{OID}.json", snapshot)
+            result = smoke.summarize(OID, folder, 1)
+        self.assertEqual(result["collector_status"], "unknown")
+
+    def test_ready_payload_numeric_types_are_not_coerced(self):
+        with TemporaryDirectory() as root:
+            folder = saved_export(root)
+            payload = json.loads((folder / "apify.json").read_bytes())
+            payload[0]["rating"] = float(payload[0]["rating"])
+            save_result(folder / "apify.json", payload)
+            with self.assertRaises(ValueError):
+                smoke.summarize(OID, folder, 0)
+
     def test_rejected_report_exposes_only_numeric_field_diagnostics(self):
         with TemporaryDirectory() as root:
             folder = Path(root) / OID
@@ -129,7 +147,7 @@ class SummaryTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
-    @patch("actions_smoke.subprocess.run")
+    @patch("run_homeradar.subprocess.run")
     def test_source_pagination_diagnostic_excludes_non_numeric_fields(self, run):
         def rejected(*args, **kwargs):
             kwargs["stdout"].write(
@@ -156,16 +174,16 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result.get("source_pagination", {}).get("totalPages"), 12)
         self.assertNotIn("PRIVATE", json.dumps(result))
 
-    @patch("actions_smoke.publish_summary")
-    @patch("actions_smoke.run_suite", return_value={"passed": 2})
+    @patch("run_homeradar.publish_summary")
+    @patch("run_homeradar.run_suite", return_value={"passed": 2})
     def test_cli_accepts_and_deduplicates_selected_organizations(self, run, publish):
         with patch(
-            "sys.argv", ["actions_smoke.py", "--organization", OID, "987654321", OID]
+            "sys.argv", ["run_homeradar.py", "--organization", OID, "987654321", OID]
         ):
             self.assertEqual(smoke.main(), 0)
         self.assertEqual(run.call_args.args[1], (OID, "987654321"))
 
-    @patch("actions_smoke.subprocess.run")
+    @patch("run_homeradar.subprocess.run")
     def test_rejection_exposes_fixed_reason_code_not_private_log(self, run):
         def rejected(*args, **kwargs):
             kwargs["stdout"].write(
@@ -179,15 +197,15 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result.get("reason"), "review_mismatch")
         self.assertNotIn("PRIVATE", json.dumps(result))
 
-    @patch("actions_smoke.publish_summary")
-    @patch("actions_smoke.run_suite", return_value={"passed": 1})
+    @patch("run_homeradar.publish_summary")
+    @patch("run_homeradar.run_suite", return_value={"passed": 1})
     def test_cli_can_run_only_the_organization_under_investigation(self, run, publish):
-        with patch("sys.argv", ["actions_smoke.py", "--organization", OID]):
+        with patch("sys.argv", ["run_homeradar.py", "--organization", OID]):
             self.assertEqual(smoke.main(), 0)
         self.assertEqual(run.call_args.args[1], (OID,))
 
-    @patch("actions_smoke.run_case")
-    @patch("actions_smoke.time.sleep")
+    @patch("run_homeradar.run_case")
+    @patch("run_homeradar.time.sleep")
     def test_suite_uses_actual_catalog_size_not_hardcoded_ten(self, sleep, run):
         run.return_value = {"organization_id": OID, "status": "passed"}
         with TemporaryDirectory() as root:
@@ -198,7 +216,7 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("Attempted: 1/1", markdown)
         self.assertEqual(run.call_count, 1)
 
-    @patch("actions_smoke.subprocess.run")
+    @patch("run_homeradar.subprocess.run")
     def test_child_logs_are_captured_not_streamed_to_public_console(self, run):
         run.return_value = subprocess.CompletedProcess([], 1)
         with TemporaryDirectory() as root:
@@ -209,7 +227,7 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("shell", run.call_args.kwargs)
         self.assertEqual(run.call_args.args[0][2], OID)
 
-    @patch("actions_smoke.subprocess.run")
+    @patch("run_homeradar.subprocess.run")
     def test_access_restriction_stops_remaining_companies(self, run):
         def restricted(*args, **kwargs):
             kwargs["stdout"].write("PRIVATE error: HTTP Error 429\n")

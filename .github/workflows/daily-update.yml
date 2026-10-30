@@ -1,0 +1,110 @@
+name: HomeRadar daily update
+
+on:
+  schedule:
+    # 03:17 Europe/Moscow (UTC+3).
+    - cron: "17 0 * * *"
+  workflow_dispatch:
+    inputs:
+      organization_ids:
+        description: Space-separated Yandex IDs; empty collects the complete company registry
+        type: string
+        default: ""
+      dry_run:
+        description: Validate delivery without sending anything to the site
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homeradar-live
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install project and Chromium
+        id: install
+        run: |
+          python -m pip install .
+          python -m playwright install --with-deps chromium
+      - name: Offline regression tests
+        id: tests
+        run: python -m unittest discover -v
+      - name: Collect current reviews
+        id: collect
+        timeout-minutes: 317
+        env:
+          ORGANIZATION_IDS: ${{ inputs.organization_ids }}
+        run: |
+          if [[ "$ORGANIZATION_IDS" =~ [^0-9[:space:]] ]]; then
+            echo "::error::organization_ids must contain numeric IDs separated by whitespace"
+            exit 2
+          fi
+          read -r -a ids <<< "${ORGANIZATION_IDS//[[:space:]]/ }"
+          args=()
+          if ((${#ids[@]})); then
+            args+=(--organization "${ids[@]}")
+          fi
+          python run_homeradar.py collect --output review_results/daily "${args[@]}"
+      - name: Deliver verified current exports
+        id: deliver
+        if: >-
+          ${{ !cancelled() && github.ref == 'refs/heads/main' &&
+              steps.install.outcome == 'success' && steps.tests.outcome == 'success' &&
+              (steps.collect.outcome == 'success' || steps.collect.outcome == 'failure') }}
+        timeout-minutes: 30
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          HOMERADAR_IMPORT_URL: ${{ (github.event_name == 'schedule' || inputs.dry_run == false) && vars.HOMERADAR_IMPORT_URL || '' }}
+          HOMERADAR_IMPORT_TOKEN: ${{ (github.event_name == 'schedule' || inputs.dry_run == false) && secrets.HOMERADAR_IMPORT_TOKEN || '' }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python run_homeradar.py deliver --output review_results/daily "${args[@]}"
+      - name: Append safe job summary
+        if: ${{ always() }}
+        env:
+          COLLECTION_STATUS: ${{ steps.collect.outcome }}
+          DELIVERY_STATUS: ${{ steps.deliver.outcome }}
+        run: |
+          if [ -f review_results/daily/summary.md ]; then
+            cat review_results/daily/summary.md >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f review_results/daily/collection/summary.md ]; then
+            cat review_results/daily/collection/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No safe collection summary was produced; inspect the failed setup/test step." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '\n\nCollection step: %s; delivery step: %s.\n' "$COLLECTION_STATUS" "$DELIVERY_STATUS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload safe summaries only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: homeradar-daily-summary
+          path: |
+            review_results/daily/catalog.json
+            review_results/daily/collection/summary.json
+            review_results/daily/collection/summary.md
+            review_results/daily/delivery.json
+            review_results/daily/summary.md
+          if-no-files-found: warn
+          retention-days: 3

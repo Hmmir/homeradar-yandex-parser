@@ -12,6 +12,7 @@ on:
           - dom-v-srok
           - catalog
           - selected
+          - daily
       organization_ids:
         description: Space-separated Yandex IDs for selected scope
         type: string
@@ -21,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: homeradar-manual-smoke
+  group: homeradar-live
   cancel-in-progress: false
 
 jobs:
@@ -54,12 +55,27 @@ jobs:
       - name: Offline regression tests
         run: python -m unittest discover -v
       - name: Live acceptance test
-        timeout-minutes: ${{ (inputs.scope == 'catalog' || inputs.scope == 'selected') && 330 || 10 }}
+        timeout-minutes: ${{ (inputs.scope == 'catalog' || inputs.scope == 'selected' || inputs.scope == 'daily') && 330 || 10 }}
         env:
           TEST_SCOPE: ${{ inputs.scope }}
           ORGANIZATION_IDS: ${{ inputs.organization_ids }}
         run: |
-          if [ "$TEST_SCOPE" = "catalog" ]; then
+          if [ "$TEST_SCOPE" = "daily" ]; then
+            if [[ "$ORGANIZATION_IDS" =~ [^0-9[:space:]] ]]; then
+              echo "::error::organization_ids must contain numeric IDs"
+              exit 2
+            fi
+            read -r -a ids <<< "${ORGANIZATION_IDS//[[:space:]]/ }"
+            args=()
+            if ((${#ids[@]})); then
+              args+=(--organization "${ids[@]}")
+            fi
+            collection_code=0
+            python run_homeradar.py collect --output review_results/daily "${args[@]}" || collection_code=$?
+            python run_homeradar.py deliver --output review_results/daily --dry-run
+            cat review_results/daily/summary.md >> "$GITHUB_STEP_SUMMARY"
+            exit "$collection_code"
+          elif [ "$TEST_SCOPE" = "catalog" ]; then
             python actions_catalog.py
           elif [ "$TEST_SCOPE" = "dom-v-srok" ]; then
             python actions_smoke.py --organization 243170996991
@@ -80,5 +96,10 @@ jobs:
             review_results/actions-catalog/catalog.json
             review_results/actions-catalog/results/summary.json
             review_results/actions-catalog/results/summary.md
+            review_results/daily/catalog.json
+            review_results/daily/collection/summary.json
+            review_results/daily/collection/summary.md
+            review_results/daily/delivery.json
+            review_results/daily/summary.md
           if-no-files-found: warn
           retention-days: 3

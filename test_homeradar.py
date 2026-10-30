@@ -2,6 +2,7 @@
 
 import copy
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -574,6 +575,30 @@ class FullCollectionTests(unittest.TestCase):
 
 
 class FileTests(unittest.TestCase):
+    def setUp(self):
+        def collect(command, **kwargs):
+            from storage import save_result
+
+            raw = Path(command[command.index("--output") + 1])
+            snapshot, _ = example()
+            save_result(raw / f"{OID}.json", snapshot)
+            return subprocess.CompletedProcess(command, 0)
+
+        self.browser = self.enterContext(patch("subprocess.run", side_effect=collect))
+
+    @patch("export_homeradar.collect_details")
+    def test_browser_failure_cannot_be_replaced_by_public_html(self, fetch):
+        _, fetch.return_value = example()
+        self.browser.side_effect = None
+        self.browser.return_value = subprocess.CompletedProcess([], 1)
+        with TemporaryDirectory() as folder:
+            target = Path(folder) / "ready.json"
+            target.write_text("previous", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                export.run_export(OID, target)
+            self.assertEqual(target.read_text(encoding="utf-8"), "previous")
+        fetch.assert_not_called()
+
     @patch("export_homeradar.collect_details")
     def test_invalid_individual_rating_keeps_existing_export(self, fetch):
         _, details = example()
@@ -586,11 +611,8 @@ class FileTests(unittest.TestCase):
                 export.run_export(OID, target)
             self.assertEqual(target.read_text(encoding="utf-8"), "previous export")
 
-    @patch("subprocess.run")
     @patch("export_homeradar.collect_details")
-    def test_live_export_uses_one_complete_public_source_without_chromium(
-        self, fetch, browser
-    ):
+    def test_live_export_requires_chromium_before_supplementary_html(self, fetch):
         _, details = example()
         fetch.return_value = details
         with TemporaryDirectory() as folder:
@@ -599,11 +621,14 @@ class FileTests(unittest.TestCase):
             snapshot = json.loads(
                 (Path(folder) / "work" / OID / "raw" / f"{OID}.json").read_bytes()
             )
-            self.assertEqual(snapshot["collection_source"], "public_html")
             self.assertEqual(snapshot["reviews"][0]["source_review_id"], "source-1")
             self.assertEqual(rows[0]["text"], details["reviews"][0]["text"])
             self.assertEqual(set(rows[0]), FIELDS)
-        browser.assert_not_called()
+        self.browser.assert_called_once()
+        command = self.browser.call_args.args[0]
+        self.assertTrue(command[1].endswith("collect_yandex.py"))
+        self.assertIn("--refresh", command)
+        self.assertEqual(command[command.index("--429-retries") + 1], "0")
 
     @patch("export_homeradar.collect_details")
     def test_source_timeout_preserves_previous_file(self, run):
