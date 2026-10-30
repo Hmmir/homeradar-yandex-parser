@@ -13,7 +13,7 @@ Collection runs before receiver setup; raw data stays ephemeral and private.
 - [x] Document Alexander's receiver contract and operational ownership.
 - [x] Complete integrated offline tests and independent security/spec review.
 - [x] Run selected and full-catalog live acceptance in GitHub Actions.
-- [ ] Install verified code in main and confirm daily workflow is enabled.
+- [x] Install verified code in main and confirm daily workflow is enabled.
 - [ ] Observe two actual cron executions (cannot substitute manual runs).
 - [ ] Alexander installs receiver and confirms real staging/production import.
 
@@ -41,3 +41,14 @@ skip; corresponding containment test passes independently); Ruff and diff checks
 GitHub repository secrets/variables are empty. OnlyownerHmmir currently has access.
 Public-code collection-only rollout is authorized; Alexander must still implement/configure
 the receiver, and two real scheduled executions must be observed after installation.
+
+Installed code602ad77 on main. Daily workflow402249100 is active with cron17 0 * * *
+(03:17Moscow). Actual production-workflow manual run
+[41130822695](https://github.com/Hmmir/homeradar-yandex-parser/actions/runs/41130822695)
+passed all224offline tests and7/7selected organizations (141reviews), including three
+previous anonymous-date failures and three earlier transient source mismatches.
+The delivery step ran without dry-run override, confirmed absent receiver configuration,
+and returnedcollection_only/not_configured withsite_updated=false andzeroPOSTs.
+Artifact inspection confirmed summaries only, no rawexports ormanifest.
+This proves installed manual execution; it does not substitute two future cron runs
+or Alexander's actual WordPress import acceptance.
