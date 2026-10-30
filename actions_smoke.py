@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from export_homeradar import build_export
+from collect_yandex import review_date
 from storage import save_result
 
 
@@ -48,6 +49,26 @@ def summarize(oid, folder, exit_code):
         "collector_status": status,
         "status": "rejected",
     }
+    rows = raw.get("reviews", [])
+    result["diagnostics"] = {
+        "saved_reviews": len(rows),
+        "missing_date": sum(
+            review_date(row) == datetime.min.replace(tzinfo=timezone.utc)
+            for row in rows
+        ),
+        "missing_text": sum(not row.get("text") for row in rows),
+        "invalid_rating": sum(
+            type(row.get("rating")) is not int or row["rating"] not in range(1, 6)
+            for row in rows
+        ),
+        "truncated": sum(row.get("text_truncated") is not False for row in rows),
+        "unconfirmed": sum(row.get("full_text_confirmed") is not True for row in rows),
+    }
+    for key in ("total", "whitespace_prefix"):
+        value = raw.get("text_mismatch_observations", {}).get(key, 0)
+        result["diagnostics"][f"text_mismatch_{key}"] = (
+            value if type(value) is int and value >= 0 else 0
+        )
     target = folder / "apify.json"
     if exit_code:
         if target.exists():

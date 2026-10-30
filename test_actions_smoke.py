@@ -24,6 +24,36 @@ def saved_export(root):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_rejected_report_exposes_only_numeric_field_diagnostics(self):
+        with TemporaryDirectory() as root:
+            folder = Path(root) / OID
+            snapshot, _ = example()
+            snapshot["status"] = "incomplete_fields"
+            snapshot["reviews"][0].update(
+                date=None, text_truncated=True, full_text_confirmed=False
+            )
+            snapshot["text_mismatch_observations"] = {
+                "total": 2,
+                "whitespace_prefix": 2,
+                "private": "PRIVATE",
+            }
+            save_result(folder / "work" / OID / "raw" / f"{OID}.json", snapshot)
+            result = smoke.summarize(OID, folder, 1)
+        self.assertEqual(
+            result["diagnostics"],
+            {
+                "saved_reviews": 1,
+                "missing_date": 1,
+                "missing_text": 0,
+                "invalid_rating": 0,
+                "truncated": 1,
+                "unconfirmed": 1,
+                "text_mismatch_total": 2,
+                "text_mismatch_whitespace_prefix": 2,
+            },
+        )
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
     def test_success_revalidates_saved_export_and_only_publishes_counts(self):
         with TemporaryDirectory() as root:
             folder = saved_export(root)

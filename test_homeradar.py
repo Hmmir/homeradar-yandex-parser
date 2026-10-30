@@ -275,6 +275,24 @@ class SourceTests(unittest.TestCase):
 
 
 class FullCollectionTests(unittest.TestCase):
+    def test_text_mismatch_diagnostic_does_not_publish_text(self):
+        from test_limits import row
+        from test_reviews import URL
+        from storage import save_result
+
+        previous = dict(row(1), text="PRIVATE first\nsecond full text")
+        current = dict(row(1), text="PRIVATE first second…", text_truncated=True)
+        page = fake_page(example_html(0, 1), {"company": {}, "reviews": [current]})
+        with TemporaryDirectory() as folder:
+            target = Path(folder) / "raw.json"
+            save_result(
+                target, {"organization_id": OID, "reviews": [previous], "company": {}}
+            )
+            result = collect(page, OID, URL, target, None, 0)
+        self.assertEqual(
+            result["text_mismatch_observations"], {"total": 1, "whitespace_prefix": 1}
+        )
+
     def test_html_crlf_and_dom_lf_do_not_invalidate_confirmed_full_text(self):
         state = {
             "stack": [

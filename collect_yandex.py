@@ -917,6 +917,13 @@ def collect(page, oid, url, target, limit, scroll_pause):
                 row["text_truncated"] = False
             # Изменённое начало отменяет подтверждение прежнего полного текста.
             else:
+                diagnostic = result.setdefault(
+                    "text_mismatch_observations", {"total": 0, "whitespace_prefix": 0}
+                )
+                diagnostic["total"] += 1
+                diagnostic["whitespace_prefix"] += int(
+                    " ".join(old["text"].split()).startswith(" ".join(prefix.split()))
+                )
                 # Новую версию нужно раскрыть обычной кнопкой страницы.
                 full_text_observed.discard(row["id"])
         # Полный текст подтверждается только реально прочитанным содержимым.
