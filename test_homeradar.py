@@ -2,7 +2,6 @@
 
 import copy
 import json
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -87,6 +86,8 @@ def business(details, page=1, total=1):
                 "page": page,
                 "totalPages": total,
                 "count": len(details["reviews"]),
+                "limit": len(details["reviews"]),
+                "offset": (page - 1) * len(details["reviews"]),
             },
             "reviews": details["reviews"],
         },
@@ -94,6 +95,13 @@ def business(details, page=1, total=1):
 
 
 class ExportTests(unittest.TestCase):
+    def test_missing_business_rating_has_stable_diagnostic_code(self):
+        with self.assertRaises(ValueError) as caught:
+            export.metrics({"ratingValue": 0, "ratingCount": 4, "reviewCount": 1})
+        self.assertTrue(
+            str(caught.exception).startswith("[business_rating_unavailable]")
+        )
+
     def test_exact_apify_contract_including_real_supplement_fields(self):
         rows = export.build_export(*example())
         self.assertEqual(set(rows[0]), FIELDS)
@@ -209,6 +217,50 @@ class ExportTests(unittest.TestCase):
 
 
 class SourceTests(unittest.TestCase):
+    def test_public_snapshot_keeps_source_ids_and_newest_first_order(self):
+        _, details = example()
+        older = copy.deepcopy(details["reviews"][0])
+        older.update(reviewId="source-older", updatedTime="2026-09-01T12:00:00Z")
+        details["reviews"].insert(0, older)
+        details["pages"][0]["rating"]["reviewCount"] = 2
+        details["pages"][0]["pagination"]["count"] = 2
+        snapshot = export.snapshot_from_details(details)
+        self.assertEqual(
+            [row["source_review_id"] for row in snapshot["reviews"]],
+            ["source-1", "source-older"],
+        )
+
+    @patch("export_homeradar.time.sleep")
+    @patch("export_homeradar.fetch_business")
+    def test_rejects_repeated_page_offset(self, fetch, sleep):
+        _, details = example()
+        first, second = business(details, 1, 2), business(copy.deepcopy(details), 2, 2)
+        for page in (first, second):
+            page["ratingData"]["reviewCount"] = 2
+            page["reviewResults"]["params"]["count"] = 2
+        second["reviewResults"]["params"]["offset"] = 0
+        fetch.side_effect = [first, second]
+        with self.assertRaises(ValueError):
+            export.collect_details(OID)
+
+    @patch("export_homeradar.fetch_business")
+    def test_incomplete_source_page_is_not_published(self, fetch):
+        _, details = example()
+        page = business(details)
+        page["reviewResults"]["reviews"] = []
+        fetch.return_value = page
+        with self.assertRaises(ValueError):
+            export.collect_details(OID)
+
+    @patch("export_homeradar.fetch_business")
+    def test_access_restriction_is_not_retried(self, fetch):
+        from urllib.error import HTTPError
+
+        fetch.side_effect = HTTPError("https://yandex.ru/", 429, "Limited", {}, None)
+        with self.assertRaises(HTTPError):
+            export.collect_details(OID)
+        self.assertEqual(fetch.call_count, 1)
+
     def test_reads_original_state_view_without_losing_html_characters(self):
         _, details = example()
         details["reviews"][0]["text"] = "Дом <3 &amp; уют"
@@ -247,8 +299,23 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(fetch.call_args_list[1].args, (OID, 2))
         sleep.assert_called_once_with(1)
 
+    @patch("export_homeradar.time.sleep")
     @patch("export_homeradar.fetch_business")
-    def test_refuses_page_limit_without_more_requests(self, fetch):
+    def test_visits_all_pages_above_legacy_twelve_page_limit(self, fetch, sleep):
+        _, details = example()
+        pages = []
+        for number in range(1, 14):
+            page = business(copy.deepcopy(details), number, 13)
+            page["ratingData"]["reviewCount"] = 13
+            page["reviewResults"]["params"]["count"] = 13
+            page["reviewResults"]["reviews"][0]["reviewId"] = f"source-{number}"
+            pages.append(page)
+        fetch.side_effect = pages
+        self.assertEqual(len(export.collect_details(OID)["reviews"]), 13)
+        self.assertEqual(fetch.call_count, 13)
+
+    @patch("export_homeradar.fetch_business")
+    def test_refuses_inconsistent_page_count_without_more_requests(self, fetch):
         _, details = example()
         fetch.return_value = business(details, total=13)
         with self.assertRaises(ValueError):
@@ -444,13 +511,44 @@ class FullCollectionTests(unittest.TestCase):
 
 
 class FileTests(unittest.TestCase):
-    @patch("export_homeradar.subprocess.run")
-    def test_collector_timeout_preserves_previous_file(self, run):
-        run.side_effect = subprocess.TimeoutExpired("collector", 900)
+    @patch("export_homeradar.collect_details")
+    def test_invalid_individual_rating_keeps_existing_export(self, fetch):
+        _, details = example()
+        details["reviews"][0]["rating"] = None
+        fetch.return_value = details
+        with TemporaryDirectory() as folder:
+            target = Path(folder) / "ready.json"
+            target.write_text("previous export", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                export.run_export(OID, target)
+            self.assertEqual(target.read_text(encoding="utf-8"), "previous export")
+
+    @patch("subprocess.run")
+    @patch("export_homeradar.collect_details")
+    def test_live_export_uses_one_complete_public_source_without_chromium(
+        self, fetch, browser
+    ):
+        _, details = example()
+        fetch.return_value = details
+        with TemporaryDirectory() as folder:
+            target = Path(folder) / "ready.json"
+            rows = export.run_export(OID, target)
+            snapshot = json.loads(
+                (Path(folder) / "work" / OID / "raw" / f"{OID}.json").read_bytes()
+            )
+            self.assertEqual(snapshot["collection_source"], "public_html")
+            self.assertEqual(snapshot["reviews"][0]["source_review_id"], "source-1")
+            self.assertEqual(rows[0]["text"], details["reviews"][0]["text"])
+            self.assertEqual(set(rows[0]), FIELDS)
+        browser.assert_not_called()
+
+    @patch("export_homeradar.collect_details")
+    def test_source_timeout_preserves_previous_file(self, run):
+        run.side_effect = TimeoutError("source timed out")
         with TemporaryDirectory() as folder:
             target = Path(folder) / "ready.json"
             target.write_text("old", encoding="utf-8")
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(TimeoutError):
                 export.run_export(OID, target)
             self.assertEqual(target.read_text(encoding="utf-8"), "old")
 
@@ -498,20 +596,16 @@ class FileTests(unittest.TestCase):
                 target.read_text(encoding="utf-8"), "previous successful export"
             )
 
-    @patch("export_homeradar.subprocess.run")
-    def test_failed_collector_preserves_export_and_does_not_fetch_supplement(self, run):
-        run.return_value = subprocess.CompletedProcess([], 1)
+    @patch("export_homeradar.collect_details")
+    def test_failed_source_preserves_previous_export(self, run):
+        run.side_effect = ValueError("incomplete source")
         with TemporaryDirectory() as folder:
             target = Path(folder) / "ready.json"
             target.write_text("old", encoding="utf-8")
-            with patch("export_homeradar.collect_details") as collect:
-                with self.assertRaises(ValueError):
-                    export.run_export(OID, target)
-                collect.assert_not_called()
+            with self.assertRaises(ValueError):
+                export.run_export(OID, target)
             self.assertEqual(target.read_text(encoding="utf-8"), "old")
-            command = run.call_args.args[0]
-            self.assertIn("--refresh", command)
-            self.assertEqual(command[command.index("--429-retries") + 1], "0")
+            run.assert_called_once_with(OID)
 
 
 if __name__ == "__main__":

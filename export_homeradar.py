@@ -3,8 +3,6 @@
 import argparse
 import json
 import math
-import subprocess
-import sys
 import time
 import unicodedata
 from collections import defaultdict
@@ -13,9 +11,21 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from collect_yandex import cache_complete, canonical_url, run_cli
+from collect_yandex import (
+    SCHEMA_VERSION,
+    cache_complete,
+    canonical_url,
+    review_date,
+    review_text,
+    run_cli,
+)
 from extract_saved_html import StateScript
 from storage import output_lock, save_result
+
+
+class ExportValidationError(ValueError):
+    def __init__(self, reason, message):
+        super().__init__(f"[{reason}] {message}")
 
 
 def read_business(html, oid):
@@ -33,7 +43,9 @@ def read_business(html, oid):
                 item.get("reviewResults"), dict
             ):
                 return item
-    raise ValueError(f"В HTML не найдены отзывы организации {oid}")
+    raise ExportValidationError(
+        "organization_unavailable", f"В HTML не найдены отзывы организации {oid}"
+    )
 
 
 def fetch_business(oid, page):
@@ -52,7 +64,9 @@ def fetch_business(oid, page):
 
 def metrics(ratings):
     if not isinstance(ratings, dict):
-        raise ValueError("Нет общих показателей организации")
+        raise ExportValidationError(
+            "missing_business_metrics", "Нет общих показателей организации"
+        )
     rating, count, reviews = (
         ratings.get(k) for k in ("ratingValue", "ratingCount", "reviewCount")
     )
@@ -61,9 +75,15 @@ def metrics(ratings):
         or not math.isfinite(rating)
         or not 1 <= rating <= 5
     ):
-        raise ValueError("Общий рейтинг организации отсутствует или некорректен")
+        raise ExportValidationError(
+            "business_rating_unavailable",
+            "Общий рейтинг организации отсутствует или некорректен",
+        )
     if any(type(n) is not int or n < 0 for n in (count, reviews)):
-        raise ValueError("Количество оценок или отзывов отсутствует или некорректно")
+        raise ExportValidationError(
+            "invalid_business_counts",
+            "Количество оценок или отзывов отсутствует или некорректно",
+        )
     return round(rating, 1), count, reviews
 
 
@@ -84,13 +104,14 @@ def validate_details(details, oid):
         if (
             params.get("page") != number
             or type(params.get("totalPages")) is not int
-            or not 1 <= params["totalPages"] <= 12
+            or params["totalPages"] < 1
             or params["totalPages"] != len(pages)
             or params.get("count") != expected[2]
             or metrics(page.get("rating")) != expected
         ):
-            raise ValueError(
-                "Неполная пагинация или показатели изменились во время сбора"
+            raise ExportValidationError(
+                "pagination_changed",
+                "Неполная пагинация или показатели изменились во время сбора",
             )
     ids = set()
     for row in reviews:
@@ -104,26 +125,56 @@ def validate_details(details, oid):
             raise ValueError("Неверная организация, отсутствующий ID или дубли отзывов")
         ids.add(row["reviewId"])
     if len(reviews) != expected[2]:
-        raise ValueError("Число полученных отзывов не совпадает со счётчиком Яндекса")
+        raise ExportValidationError(
+            "source_review_count_mismatch",
+            "Число полученных отзывов не совпадает со счётчиком Яндекса",
+        )
     return expected
 
 
 def collect_details(oid):
-    """Read public HTML pages for avatars and replies omitted by the upstream export."""
+    """Collect the complete public source, checking every page before publication."""
     details = {"organization_id": oid, "pages": [], "reviews": []}
+    started = time.monotonic()
     total = 1
     number = 1
     while number <= total:
+        if time.monotonic() - started >= 900:
+            raise ExportValidationError(
+                "collection_timeout",
+                "Сбор превысил 15 минут; прежний экспорт не изменён",
+            )
         if number > 1:
             time.sleep(1)
         business = fetch_business(oid, number)
+        expected = metrics(business.get("ratingData"))
+        if not expected[2]:
+            raise ExportValidationError(
+                "empty_export",
+                "Пустой массив не передаёт рейтинг HomeRadar; прежний файл сохранён",
+            )
         result = business["reviewResults"]
         params = result.get("params", {})
         reported_total = params.get("totalPages")
-        if type(reported_total) is not int or not 1 <= reported_total <= 12:
-            raise ValueError("Яндекс не отдаёт полную выгрузку в пределах 12 страниц")
+        limit, offset = params.get("limit"), params.get("offset")
+        if (
+            type(limit) is not int
+            or limit < 1
+            or type(offset) is not int
+            or offset != (number - 1) * limit
+            or type(reported_total) is not int
+            or reported_total != (expected[2] + limit - 1) // limit
+            or params.get("count") != expected[2]
+        ):
+            raise ExportValidationError(
+                "invalid_pagination",
+                "Пагинация не соответствует счётчику отзывов Яндекса",
+            )
         if params.get("page") != number or (number > 1 and reported_total != total):
-            raise ValueError("Яндекс вернул другую страницу или изменил пагинацию")
+            raise ExportValidationError(
+                "pagination_changed",
+                "Яндекс вернул другую страницу или изменил пагинацию",
+            )
         total = reported_total
         details["pages"].append(
             {"rating": business.get("ratingData"), "pagination": params}
@@ -131,10 +182,65 @@ def collect_details(oid):
         rows = result.get("reviews")
         if not isinstance(rows, list):
             raise ValueError("В ответе Яндекса отсутствует список отзывов")
+        if len(rows) != min(limit, expected[2] - offset):
+            raise ExportValidationError(
+                "source_review_count_mismatch",
+                "Получена неполная страница отзывов Яндекса",
+            )
         details["reviews"].extend(rows)
+        print(
+            json.dumps(
+                {
+                    "event": "homeradar_source_page",
+                    "organization_id": oid,
+                    "page": number,
+                    "pages": total,
+                    "reviews": len(details["reviews"]),
+                }
+            ),
+            flush=True,
+        )
         number += 1
     validate_details(details, oid)
     return details
+
+
+def snapshot_from_details(details):
+    oid = details.get("organization_id")
+    rating, ratings_count, reviews_count = validate_details(details, oid)
+    rows = []
+    for source in details["reviews"]:
+        _, individual_rating, _, date = review_identity(source, source=True)
+        author = source.get("author") or {}
+        public_id = text(author.get("publicId"))
+        rows.append(
+            {
+                "id": source["reviewId"],
+                "source_review_id": source["reviewId"],
+                "author": text(author.get("name")),
+                "author_url": f"https://yandex.ru/maps/user/{public_id}"
+                if public_id
+                else None,
+                "date": date,
+                "text": review_text(source["text"]),
+                "rating": individual_rating,
+                "text_truncated": False,
+                "full_text_confirmed": True,
+                "observation": "html",
+            }
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "organization_id": oid,
+        "status": "complete",
+        "collection_source": "public_html",
+        "reviews": sorted(rows, key=review_date, reverse=True),
+        "company": {
+            "rating": rating,
+            "ratings_count": ratings_count,
+            "reviews_count": reviews_count,
+        },
+    }
 
 
 def text(value):
@@ -150,9 +256,13 @@ def utc_date(value):
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
-        raise ValueError("Некорректная ISO-дата отзыва или ответа") from error
+        raise ExportValidationError(
+            "invalid_date", "Некорректная ISO-дата отзыва или ответа"
+        ) from error
     if parsed.tzinfo is None:
-        raise ValueError("Дата должна содержать часовой пояс")
+        raise ExportValidationError(
+            "missing_timezone", "Дата должна содержать часовой пояс"
+        )
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -168,7 +278,10 @@ def review_identity(row, source=False):
     body = " ".join(unicodedata.normalize("NFC", text(row.get("text"))).split())
     rating = row.get("rating")
     if not body or type(rating) is not int or not 1 <= rating <= 5:
-        raise ValueError("Отзыв без текста или корректной индивидуальной оценки")
+        raise ExportValidationError(
+            "invalid_review_fields",
+            "Отзыв без текста или корректной индивидуальной оценки",
+        )
     return body, rating, author, utc_date(row.get("updatedTime" if source else "date"))
 
 
@@ -193,7 +306,10 @@ def build_export(snapshot, details):
             "reviewCount": company.get("reviews_count"),
         }
     ) != (rating, ratings_count, reviews_count):
-        raise ValueError("Показатели браузера и публичных страниц не совпадают")
+        raise ExportValidationError(
+            "business_metrics_changed",
+            "Показатели браузера и публичных страниц не совпадают",
+        )
     if not snapshot["reviews"]:
         raise ValueError(
             "Пустой массив не передаёт рейтинг HomeRadar; прежний файл сохранён"
@@ -212,8 +328,9 @@ def build_export(snapshot, details):
         if not source_id:
             matches = by_content.get(identity, [])
         if len(matches) != 1 or review_identity(matches[0], source=True) != identity:
-            raise ValueError(
-                "Нельзя однозначно сопоставить отзыв с дополнительными полями"
+            raise ExportValidationError(
+                "review_mismatch",
+                "Нельзя однозначно сопоставить отзыв с дополнительными полями",
             )
         source = matches[0]
         if source["reviewId"] in used:
@@ -259,7 +376,7 @@ def write_export(snapshot, details, target):
 def run_export(
     organization, output, executable=None, snapshot_path=None, details_path=None
 ):
-    oid, url = canonical_url(organization)
+    oid, _ = canonical_url(organization)
     output = Path(output).resolve()
     inputs = [Path(p).resolve() for p in (snapshot_path, details_path) if p is not None]
     if output in inputs:
@@ -274,30 +391,21 @@ def run_export(
                 raise ValueError(
                     "Файл экспорта не должен совпадать со служебными файлами"
                 )
-            command = [
-                sys.executable,
-                str(Path(__file__).with_name("collect_yandex.py")),
-                url,
-                "--output",
-                str(raw),
-                "--refresh",
-                "--429-retries",
-                "0",
-            ]
             if executable:
-                command.extend(["--executable", str(executable)])
-            try:
-                result = subprocess.run(command, timeout=900, check=False)
-            except subprocess.TimeoutExpired as error:
-                raise RuntimeError(
-                    "Сбор превысил 15 минут; прежний экспорт не изменён"
-                ) from error
-            if result.returncode:
-                raise ValueError(
-                    f"Сборщик завершился с кодом {result.returncode}; экспорт не изменён"
+                print(
+                    json.dumps(
+                        {
+                            "event": "homeradar_executable_unused",
+                            "organization_id": oid,
+                            "collection_source": "public_html",
+                        }
+                    ),
+                    flush=True,
                 )
             details = collect_details(oid)
             save_result(details_path, details)
+            snapshot = snapshot_from_details(details)
+            save_result(snapshot_path, snapshot)
         else:
             details = json.loads(Path(details_path).read_text(encoding="utf-8-sig"))
         snapshot = json.loads(Path(snapshot_path).read_text(encoding="utf-8-sig"))
@@ -330,7 +438,10 @@ def main():
     parser.add_argument(
         "--output", required=True, type=Path, help="Готовый JSON-массив HomeRadar"
     )
-    parser.add_argument("--executable", help="Путь к установленному Chrome/Chromium")
+    parser.add_argument(
+        "--executable",
+        help="Совместимость прежнего CLI: HTML-экспорт не использует браузер",
+    )
     parser.add_argument(
         "--from-snapshot",
         type=Path,

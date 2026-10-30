@@ -130,6 +130,29 @@ class SummaryTests(unittest.TestCase):
 
 class RunnerTests(unittest.TestCase):
     @patch("actions_smoke.publish_summary")
+    @patch("actions_smoke.run_suite", return_value={"passed": 2})
+    def test_cli_accepts_and_deduplicates_selected_organizations(self, run, publish):
+        with patch(
+            "sys.argv", ["actions_smoke.py", "--organization", OID, "987654321", OID]
+        ):
+            self.assertEqual(smoke.main(), 0)
+        self.assertEqual(run.call_args.args[1], (OID, "987654321"))
+
+    @patch("actions_smoke.subprocess.run")
+    def test_rejection_exposes_fixed_reason_code_not_private_log(self, run):
+        def rejected(*args, **kwargs):
+            kwargs["stdout"].write(
+                "ExportValidationError: [review_mismatch] PRIVATE review details\n"
+            )
+            return subprocess.CompletedProcess(args[0], 1)
+
+        run.side_effect = rejected
+        with TemporaryDirectory() as root:
+            result = smoke.run_case(OID, Path(root))
+        self.assertEqual(result.get("reason"), "review_mismatch")
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
+    @patch("actions_smoke.publish_summary")
     @patch("actions_smoke.run_suite", return_value={"passed": 1})
     def test_cli_can_run_only_the_organization_under_investigation(self, run, publish):
         with patch("sys.argv", ["actions_smoke.py", "--organization", OID]):

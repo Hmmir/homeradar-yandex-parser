@@ -11,6 +11,11 @@ on:
           - smoke
           - dom-v-srok
           - catalog
+          - selected
+      organization_ids:
+        description: Space-separated Yandex IDs for selected scope
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -49,14 +54,18 @@ jobs:
       - name: Offline regression tests
         run: python -m unittest discover -v
       - name: Live acceptance test
-        timeout-minutes: ${{ inputs.scope == 'catalog' && 330 || 10 }}
+        timeout-minutes: ${{ (inputs.scope == 'catalog' || inputs.scope == 'selected') && 330 || 10 }}
         env:
           TEST_SCOPE: ${{ inputs.scope }}
+          ORGANIZATION_IDS: ${{ inputs.organization_ids }}
         run: |
           if [ "$TEST_SCOPE" = "catalog" ]; then
             python actions_catalog.py
           elif [ "$TEST_SCOPE" = "dom-v-srok" ]; then
             python actions_smoke.py --organization 243170996991
+          elif [ "$TEST_SCOPE" = "selected" ]; then
+            read -r -a ids <<< "$ORGANIZATION_IDS"
+            python actions_smoke.py --organization "${ids[@]}"
           else
             python actions_smoke.py
           fi

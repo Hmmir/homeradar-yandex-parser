@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -146,6 +147,9 @@ def run_case(oid, output):
             }
     result["elapsed_seconds"] = round(time.monotonic() - started, 2)
     private_log = log_path.read_text(encoding="utf-8").lower()
+    rejection = re.search(r"exportvalidationerror: \[([a-z_]+)\]", private_log)
+    if rejection:
+        result["reason"] = rejection.group(1)
     if result.get("collector_status") in ACCESS_STATUSES or any(
         marker in private_log
         for marker in ("captcha", "http error 403", "http error 429")
@@ -213,10 +217,16 @@ def publish_summary(output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--organization", help="Only test this Yandex organization ID or URL"
+        "--organization",
+        nargs="+",
+        help="Only test these Yandex organization IDs or URLs",
     )
     args = parser.parse_args()
-    cases = (canonical_url(args.organization)[0],) if args.organization else CASES
+    cases = (
+        tuple(dict.fromkeys(canonical_url(value)[0] for value in args.organization))
+        if args.organization
+        else CASES
+    )
     report = run_suite(OUTPUT, cases)
     publish_summary(OUTPUT)
     return 0 if report["passed"] == len(cases) else 1
