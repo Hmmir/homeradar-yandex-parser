@@ -2,6 +2,15 @@ name: HomeRadar manual smoke test
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: One-off test scope (no site updates)
+        type: choice
+        default: smoke
+        options:
+          - smoke
+          - dom-v-srok
+          - catalog
 
 permissions:
   contents: read
@@ -13,7 +22,7 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 350
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: "1"
@@ -39,9 +48,18 @@ jobs:
           df -h .
       - name: Offline regression tests
         run: python -m unittest discover -v
-      - name: Live smoke test on ten organizations
-        timeout-minutes: 10
-        run: python actions_smoke.py
+      - name: Live acceptance test
+        timeout-minutes: ${{ inputs.scope == 'catalog' && 330 || 10 }}
+        env:
+          TEST_SCOPE: ${{ inputs.scope }}
+        run: |
+          if [ "$TEST_SCOPE" = "catalog" ]; then
+            python actions_catalog.py
+          elif [ "$TEST_SCOPE" = "dom-v-srok" ]; then
+            python actions_smoke.py --organization 243170996991
+          else
+            python actions_smoke.py
+          fi
       - name: Upload summary only
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -50,5 +68,8 @@ jobs:
           path: |
             review_results/actions-smoke/summary.json
             review_results/actions-smoke/summary.md
+            review_results/actions-catalog/catalog.json
+            review_results/actions-catalog/results/summary.json
+            review_results/actions-catalog/results/summary.md
           if-no-files-found: warn
           retention-days: 3

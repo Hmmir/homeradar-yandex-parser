@@ -48,11 +48,33 @@ class SummaryTests(unittest.TestCase):
                 "invalid_rating": 0,
                 "truncated": 1,
                 "unconfirmed": 1,
+                "duplicate_profiles": 0,
+                "duplicate_profile_instants": 0,
+                "duplicate_full_texts": 0,
                 "text_mismatch_total": 2,
                 "text_mismatch_whitespace_prefix": 2,
             },
         )
         self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_diagnoses_equivalent_timestamp_identities_without_exposing_them(self):
+        snapshot, _ = example()
+        first = snapshot["reviews"][0]
+        first["author_url"] = "https://yandex.ru/maps/user/private-profile"
+        snapshot["reviews"].append(
+            dict(first, id="local-2", date="2026-10-01T15:00:00+03:00")
+        )
+        with TemporaryDirectory() as root:
+            folder = Path(root) / OID
+            save_result(folder / "work" / OID / "raw" / f"{OID}.json", snapshot)
+            result = smoke.summarize(OID, folder, 1)
+        for key in (
+            "duplicate_profiles",
+            "duplicate_profile_instants",
+            "duplicate_full_texts",
+        ):
+            self.assertEqual(result["diagnostics"][key], 1)
+        self.assertNotIn("private-profile", json.dumps(result))
 
     def test_success_revalidates_saved_export_and_only_publishes_counts(self):
         with TemporaryDirectory() as root:
@@ -106,6 +128,25 @@ class SummaryTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    @patch("actions_smoke.publish_summary")
+    @patch("actions_smoke.run_suite", return_value={"passed": 1})
+    def test_cli_can_run_only_the_organization_under_investigation(self, run, publish):
+        with patch("sys.argv", ["actions_smoke.py", "--organization", OID]):
+            self.assertEqual(smoke.main(), 0)
+        self.assertEqual(run.call_args.args[1], (OID,))
+
+    @patch("actions_smoke.run_case")
+    @patch("actions_smoke.time.sleep")
+    def test_suite_uses_actual_catalog_size_not_hardcoded_ten(self, sleep, run):
+        run.return_value = {"organization_id": OID, "status": "passed"}
+        with TemporaryDirectory() as root:
+            output = Path(root) / "run"
+            result = smoke.run_suite(output, (OID,))
+            markdown = (output / "summary.md").read_text(encoding="utf-8")
+        self.assertEqual(result["planned"], 1)
+        self.assertIn("Attempted: 1/1", markdown)
+        self.assertEqual(run.call_count, 1)
+
     @patch("actions_smoke.subprocess.run")
     def test_child_logs_are_captured_not_streamed_to_public_console(self, run):
         run.return_value = subprocess.CompletedProcess([], 1)

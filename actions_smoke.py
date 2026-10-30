@@ -1,5 +1,6 @@
 """Manual live CLI test; public reports contain counts, never review content."""
 
+import argparse
 import json
 import os
 import subprocess
@@ -10,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from export_homeradar import build_export
-from collect_yandex import review_date
+from collect_yandex import canonical_url, review_date
 from storage import save_result
 
 
@@ -64,6 +65,19 @@ def summarize(oid, folder, exit_code):
         "truncated": sum(row.get("text_truncated") is not False for row in rows),
         "unconfirmed": sum(row.get("full_text_confirmed") is not True for row in rows),
     }
+    profiles = [row for row in rows if row.get("author_url")]
+    for label, keys in (
+        ("duplicate_profiles", [row["author_url"] for row in profiles]),
+        (
+            "duplicate_profile_instants",
+            [(row["author_url"], review_date(row)) for row in profiles],
+        ),
+        (
+            "duplicate_full_texts",
+            [" ".join((row.get("text") or "").split()) for row in rows],
+        ),
+    ):
+        result["diagnostics"][label] = len(keys) - len(set(keys))
     for key in ("total", "whitespace_prefix"):
         value = raw.get("text_mismatch_observations", {}).get(key, 0)
         result["diagnostics"][f"text_mismatch_{key}"] = (
@@ -143,7 +157,7 @@ def save_report(output, report):
     lines = [
         "# HomeRadar manual smoke test",
         "",
-        f"Attempted: {report['attempted']}/10. Passed: {report['passed']}/10.",
+        f"Attempted: {report['attempted']}/{report['planned']}. Passed: {report['passed']}/{report['planned']}.",
         "",
         "| Organization ID | Result | Collector | Reviews | Seconds |",
         "|---|---|---|---:|---:|",
@@ -160,12 +174,16 @@ def save_report(output, report):
     (output / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def run_suite(output):
+def run_suite(output, cases=CASES):
     output.mkdir(parents=True, exist_ok=False)
-    report = {"started_at": datetime.now(timezone.utc).isoformat(), "results": []}
+    report = {
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "planned": len(cases),
+        "results": [],
+    }
     save_report(output, report)
     blocked = False
-    for oid in CASES:
+    for oid in cases:
         if blocked:
             result = {"organization_id": oid, "status": "not_run"}
         else:
@@ -181,13 +199,23 @@ def run_suite(output):
     return report
 
 
-def main():
-    report = run_suite(OUTPUT)
+def publish_summary(output):
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with Path(summary).open("a", encoding="utf-8") as stream:
-            stream.write((OUTPUT / "summary.md").read_text(encoding="utf-8"))
-    return 0 if report["passed"] == len(CASES) else 1
+            stream.write((output / "summary.md").read_text(encoding="utf-8"))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--organization", help="Only test this Yandex organization ID or URL"
+    )
+    args = parser.parse_args()
+    cases = (canonical_url(args.organization)[0],) if args.organization else CASES
+    report = run_suite(OUTPUT, cases)
+    publish_summary(OUTPUT)
+    return 0 if report["passed"] == len(cases) else 1
 
 
 if __name__ == "__main__":
