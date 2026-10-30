@@ -406,6 +406,103 @@ class SourceTests(unittest.TestCase):
 
 
 class FullCollectionTests(unittest.TestCase):
+    def test_legacy_cache_with_timestamp_aliases_is_not_complete(self):
+        from collect_yandex import cache_complete
+
+        snapshot, _ = example()
+        first = snapshot["reviews"][0]
+        first["author_url"] = "https://yandex.ru/maps/user/fictional"
+        snapshot["reviews"].append(
+            dict(first, id="legacy-2", date=DATE.replace("Z", ".000Z"))
+        )
+        snapshot["company"]["reviews_count"] = 2
+        self.assertFalse(cache_complete(snapshot, OID, None))
+
+    def test_ambiguous_anonymous_timestamp_aliases_do_not_choose_a_candidate(self):
+        _, details = example()
+        first = details["reviews"][0]
+        first.update(author={}, text="Отличный дом! Первый вариант.")
+        details["reviews"].append(
+            dict(first, reviewId="source-2", text="Отличный дом! Второй вариант.")
+        )
+        source = business(details)
+        source["ratingData"]["reviewCount"] = 2
+        state = {"stack": [{"results": {"items": [source]}}]}
+        html = (
+            '<script class="state-view" type="application/json">'
+            + json.dumps(state)
+            + "</script>"
+        )
+        current = {
+            "author": "Анонимный отзыв",
+            "author_url": None,
+            "date": DATE.replace("Z", ".000Z"),
+            "text": "Отличный дом!…",
+            "rating": 5,
+            "text_truncated": True,
+        }
+        with TemporaryDirectory() as folder:
+            result = collect(
+                fake_page(html, {"company": {}, "reviews": [current]}),
+                OID,
+                export.canonical_url(OID)[1],
+                Path(folder) / "raw.json",
+                None,
+                0,
+            )
+        self.assertNotEqual(result["status"], "complete")
+        self.assertTrue(
+            {"source-1", "source-2"}.issubset(
+                {row.get("source_review_id") for row in result["reviews"]}
+            )
+        )
+
+    def test_anonymous_html_and_dom_timestamp_formats_identify_one_review(self):
+        _, details = example()
+        details["reviews"][0]["author"] = {}
+        state = {"stack": [{"results": {"items": [business(details)]}}]}
+        html = (
+            '<script class="state-view" type="application/json">'
+            + json.dumps(state)
+            + "</script>"
+        )
+        current = {
+            "author": "Анонимный отзыв",
+            "author_url": None,
+            "date": DATE.replace("Z", ".000Z"),
+            "text": "Отличный…",
+            "rating": 5,
+            "text_truncated": True,
+        }
+        page = fake_page(html, {"company": {}, "reviews": [current]})
+        with TemporaryDirectory() as folder:
+            result = collect(
+                page,
+                OID,
+                export.canonical_url(OID)[1],
+                Path(folder) / "raw.json",
+                None,
+                0,
+            )
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(result["reviews"]), 1)
+        self.assertEqual(result["reviews"][0]["source_review_id"], "source-1")
+        self.assertTrue(result["reviews"][0]["full_text_confirmed"])
+
+    def test_profile_review_identity_normalizes_instants_not_different_dates(self):
+        from collect_yandex import review_key
+
+        row = {
+            "author_url": "https://yandex.ru/maps/user/fictional",
+            "date": DATE,
+            "text": "Test",
+        }
+        identity = review_key(OID, row)
+        for date in ("2026-10-01T12:00:00.000Z", "2026-10-01T15:00:00+03:00"):
+            self.assertEqual(identity, review_key(OID, dict(row, date=date)))
+        for date in ("2026-10-01T12:00:01Z", "invalid-date", None):
+            self.assertNotEqual(identity, review_key(OID, dict(row, date=date)))
+
     def test_yandex_profile_url_aliases_merge_html_and_dom_without_duplicates(self):
         for profile in (
             "https://yandex.com/maps/user/author-1",

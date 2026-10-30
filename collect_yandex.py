@@ -225,6 +225,13 @@ def canonical_profile_url(value):
 
 
 # Формируем устойчивый ключ для объединения HTML и DOM одного отзыва.
+def canonical_review_date(row):
+    instant = review_date(row)
+    if instant == datetime.min.replace(tzinfo=timezone.utc):
+        return row.get("date")
+    return instant.isoformat().replace("+00:00", "Z")
+
+
 def review_key(oid, row):
     # Полный текст обновляет тот же отзыв, сохраняя его ключ.
     # Предпочитаем публичный профиль; при его отсутствии используем отображаемое имя.
@@ -234,7 +241,7 @@ def review_key(oid, row):
         # В HTML состояние такого автора обозначается null.
         author = None
     # Объединяем организацию, автора и дату для устойчивого ключа.
-    identity = [oid, author, row.get("date")]
+    identity = [oid, author, canonical_review_date(row)]
     # Проверяем наличие автора и даты для устойчивого ключа.
     if not row.get("author_url") or not identity[2]:
         # При нехватке автора или даты используем текст как дополнительный признак.
@@ -867,7 +874,7 @@ def collect(page, oid, url, target, limit, scroll_pause):
                 # Проверяем оба направления: HTML может содержать полный текст раньше DOM.
                 and label(old_row.get("author")) == label(row.get("author"))
                 # Проверяем оба направления: HTML может содержать полный текст раньше DOM.
-                and old_row.get("date") == row.get("date")
+                and canonical_review_date(old_row) == canonical_review_date(row)
                 # Проверяем оба направления: HTML может содержать полный текст раньше DOM.
                 and bool(snippet(row))
                 # Проверяем оба направления: HTML может содержать полный текст раньше DOM.

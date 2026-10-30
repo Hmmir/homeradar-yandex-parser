@@ -11,7 +11,7 @@ Collection runs before receiver setup; raw data stays ephemeral and private.
 - [x] Add isolated, idempotent HTTPS delivery with strict typed acknowledgment.
 - [x] Add schedule/manual controls, secret isolation and safe artifacts.
 - [x] Document Alexander's receiver contract and operational ownership.
-- [ ] Complete integrated offline tests and independent security/spec review.
+- [x] Complete integrated offline tests and independent security/spec review.
 - [ ] Run selected and full-catalog live acceptance in GitHub Actions.
 - [ ] Install verified code in main and confirm daily workflow is enabled.
 - [ ] Observe two actual cron executions (cannot substitute manual runs).
@@ -20,3 +20,10 @@ Collection runs before receiver setup; raw data stays ephemeral and private.
 Never treat absent configuration, missing source fields, partial catalog results,
 HTTP success without matching receipt, or local test success as site acceptance.
 No site modifications or receiver credentials are currently available.
+
+Selected cloud run 41092805300 verified actual Chromium, current-run manifests and
+dry-run delivery; it exposed anonymous ISO timestamp aliases (Z vs .000Z).
+The fix canonicalizes instants only for identity, preserves original date values,
+and retains ambiguity rejection. Local reproduction1098497214 now exports30 rather
+than rejecting31 duplicate rows. Regression tests cover profiles, anonymous reviews,
+invalid/different dates, old cache aliases, and ambiguous candidates.
