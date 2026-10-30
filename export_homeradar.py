@@ -8,6 +8,7 @@ import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -53,13 +54,34 @@ def fetch_business(oid, page):
         f"https://yandex.ru/maps/org/{oid}/reviews/?page={page}",
         headers={"User-Agent": "HomeRadarExport/1.0", "Accept-Language": "ru-RU"},
     )
-    with urlopen(request, timeout=30) as response:
-        if urlsplit(response.url).hostname not in {"yandex.ru", "yandex.com"}:
-            raise ValueError("Яндекс перенаправил запрос за пределы карточки")
-        html = response.read(20_000_001)
-        if len(html) > 20_000_000:
-            raise ValueError("Слишком большой HTML-ответ Яндекса")
-        return read_business(html.decode("utf-8"), oid)
+    for attempt in range(2):
+        try:
+            with urlopen(request, timeout=30) as response:
+                if urlsplit(response.url).hostname not in {"yandex.ru", "yandex.com"}:
+                    raise ValueError("Яндекс перенаправил запрос за пределы карточки")
+                html = response.read(20_000_001)
+                if len(html) > 20_000_000:
+                    raise ValueError("Слишком большой HTML-ответ Яндекса")
+                return read_business(html.decode("utf-8"), oid)
+        except (URLError, TimeoutError, ConnectionError) as error:
+            if isinstance(error, HTTPError) and error.code not in {502, 503, 504}:
+                raise
+            if attempt:
+                raise ExportValidationError(
+                    "source_network_error", f"{type(error).__name__}: {error}"
+                ) from error
+            print(
+                json.dumps(
+                    {
+                        "event": "homeradar_source_retry",
+                        "organization_id": oid,
+                        "page": page,
+                        "error_type": type(error).__name__,
+                    }
+                ),
+                flush=True,
+            )
+            time.sleep(2)
 
 
 def metrics(ratings):

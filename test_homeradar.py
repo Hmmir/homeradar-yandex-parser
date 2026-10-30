@@ -217,6 +217,69 @@ class ExportTests(unittest.TestCase):
 
 
 class SourceTests(unittest.TestCase):
+    @patch("export_homeradar.time.sleep")
+    @patch("export_homeradar.urlopen")
+    def test_network_retry_is_bounded_and_validation_is_not_retried(
+        self, open_url, sleep
+    ):
+        from urllib.error import HTTPError
+
+        for error in (
+            TimeoutError("read timed out"),
+            HTTPError("https://yandex.ru/", 503, "Unavailable", {}, None),
+        ):
+            open_url.reset_mock()
+            open_url.side_effect = error
+            with (
+                self.subTest(error=type(error).__name__),
+                self.assertRaises(ValueError) as caught,
+            ):
+                export.fetch_business(OID, 1)
+            self.assertIn("[source_network_error]", str(caught.exception))
+            self.assertEqual(open_url.call_count, 2)
+        open_url.reset_mock()
+        open_url.side_effect = ValueError("invalid source")
+        with self.assertRaises(ValueError):
+            export.fetch_business(OID, 1)
+        self.assertEqual(open_url.call_count, 1)
+
+    @patch("export_homeradar.time.sleep")
+    @patch("export_homeradar.urlopen")
+    def test_transient_read_timeout_retries_only_the_failed_page(self, open_url, sleep):
+        from unittest.mock import MagicMock
+
+        _, details = example()
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.url = "https://yandex.ru/maps/org/123456789/reviews/"
+        response.read.return_value = (
+            '<script class="state-view" type="application/json">'
+            + json.dumps({"stack": [{"results": {"items": [business(details)]}}]})
+            + "</script>"
+        ).encode()
+        open_url.side_effect = [TimeoutError("read timed out"), response]
+        self.assertEqual(export.fetch_business(OID, 2)["id"], OID)
+        self.assertEqual(open_url.call_count, 2)
+        self.assertTrue(
+            all("page=2" in call.args[0].full_url for call in open_url.call_args_list)
+        )
+        sleep.assert_called_once_with(2)
+
+    @patch("export_homeradar.time.sleep")
+    @patch("export_homeradar.urlopen")
+    def test_http_access_restriction_is_never_retried(self, open_url, sleep):
+        from urllib.error import HTTPError
+
+        for code in (401, 403, 429):
+            open_url.reset_mock()
+            open_url.side_effect = HTTPError(
+                "https://yandex.ru/", code, "Restricted", {}, None
+            )
+            with self.subTest(code=code), self.assertRaises(HTTPError):
+                export.fetch_business(OID, 1)
+            self.assertEqual(open_url.call_count, 1)
+        sleep.assert_not_called()
+
     def test_public_snapshot_keeps_source_ids_and_newest_first_order(self):
         _, details = example()
         older = copy.deepcopy(details["reviews"][0])
