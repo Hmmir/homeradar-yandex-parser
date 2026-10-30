@@ -83,6 +83,10 @@ def summarize(oid, folder, exit_code):
         result["diagnostics"][f"text_mismatch_{key}"] = (
             value if type(value) is int and value >= 0 else 0
         )
+    aliases = raw.get("profile_alias_merges", 0)
+    result["diagnostics"]["profile_alias_merges"] = (
+        aliases if type(aliases) is int and aliases >= 0 else 0
+    )
     target = folder / "apify.json"
     if exit_code:
         if target.exists():

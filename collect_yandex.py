@@ -208,11 +208,27 @@ def review_text(value):
     return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
+def canonical_profile_url(value):
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return value
+    if (
+        parsed.scheme == "https"
+        and parsed.hostname in {"yandex.ru", "yandex.com"}
+        and parsed.username is None
+        and parsed.password is None
+        and re.fullmatch(r"/maps/user/[^/]+/?", parsed.path)
+    ):
+        return f"https://yandex.ru{parsed.path.rstrip('/')}"
+    return value
+
+
 # Формируем устойчивый ключ для объединения HTML и DOM одного отзыва.
 def review_key(oid, row):
     # Полный текст обновляет тот же отзыв, сохраняя его ключ.
     # Предпочитаем публичный профиль; при его отсутствии используем отображаемое имя.
-    author = row.get("author_url") or row.get("author")
+    author = canonical_profile_url(row["author_url"]) if row.get("author_url") else row.get("author")
     # Надпись интерфейса не является именем автора анонимного отзыва.
     if not row.get("author_url") and author == "Анонимный отзыв":
         # В HTML состояние такого автора обозначается null.
@@ -903,6 +919,8 @@ def collect(page, oid, url, target, limit, scroll_pause):
         observed.add(row["id"])
         # Получаем ранее сохранённую версию того же отзыва.
         old = rows.get(row["id"])
+        if old and old.get("author_url") and row.get("author_url") and old["author_url"] != row["author_url"]:
+            result["profile_alias_merges"] = result.get("profile_alias_merges", 0) + 1
         # Запоминаем полноту реально прочитанной версии до использования прежнего текста.
         incoming_full_text = bool(row["text"]) and not row["text_truncated"]
         # Сохраняем полезные поля ранее полученной версии отзыва.

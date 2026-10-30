@@ -275,6 +275,62 @@ class SourceTests(unittest.TestCase):
 
 
 class FullCollectionTests(unittest.TestCase):
+    def test_yandex_profile_url_aliases_merge_html_and_dom_without_duplicates(self):
+        for profile in (
+            "https://yandex.com/maps/user/author-1",
+            "https://yandex.ru/maps/user/author-1/",
+            "https://yandex.ru/maps/user/author-1?tab=reviews",
+        ):
+            with self.subTest(profile=profile), TemporaryDirectory() as folder:
+                _, details = example()
+                details["reviews"][0]["author"]["publicId"] = "author-1"
+                state = {"stack": [{"results": {"items": [business(details)]}}]}
+                html = (
+                    '<script class="state-view" type="application/json">'
+                    + json.dumps(state)
+                    + "</script>"
+                )
+                current = {
+                    "author": "Тестовый автор",
+                    "author_url": profile,
+                    "date": DATE,
+                    "text": "Отличный…",
+                    "rating": 5,
+                    "text_truncated": True,
+                }
+                page = fake_page(html, {"company": {}, "reviews": [current]})
+                result = collect(
+                    page,
+                    OID,
+                    export.canonical_url(OID)[1],
+                    Path(folder) / "raw.json",
+                    None,
+                    0,
+                )
+                self.assertEqual(result["status"], "complete")
+                self.assertEqual(len(result["reviews"]), 1)
+                self.assertEqual(result["confirmed_full_texts"], 1)
+                self.assertEqual(result["reviews"][0]["source_review_id"], "source-1")
+                self.assertEqual(result["profile_alias_merges"], 1)
+
+    def test_untrusted_profile_url_is_not_equivalent_to_yandex(self):
+        from collect_yandex import review_key
+
+        _, details = example()
+        row = {
+            "author_url": "https://yandex.ru/maps/user/author-1",
+            "date": DATE,
+            "text": "Тест",
+        }
+        trusted = review_key(OID, row)
+        for profile in (
+            "https://evil.example/maps/user/author-1",
+            "https://yandex.ru.evil/maps/user/author-1",
+            "http://yandex.ru/maps/user/author-1",
+            "https://[invalid-profile",
+        ):
+            self.assertNotEqual(trusted, review_key(OID, dict(row, author_url=profile)))
+
     def test_text_mismatch_diagnostic_does_not_publish_text(self):
         from test_limits import row
         from test_reviews import URL

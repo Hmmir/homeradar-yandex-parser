@@ -51,6 +51,7 @@ class SummaryTests(unittest.TestCase):
                 "duplicate_profiles": 0,
                 "duplicate_profile_instants": 0,
                 "duplicate_full_texts": 0,
+                "profile_alias_merges": 0,
                 "text_mismatch_total": 2,
                 "text_mismatch_whitespace_prefix": 2,
             },
